@@ -1,13 +1,12 @@
 import pandas as pd
+import warnings
 from pandas.tseries.offsets import BDay
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 from statsmodels.tsa.arima.model import ARIMA
 import yfinance as yf
 import os
-import matplotlib.pyplot as plt
 from statsmodels.tsa.stattools import adfuller
-from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 from dateutil.relativedelta import relativedelta
 
 def workWithData(symbol):
@@ -17,43 +16,83 @@ def workWithData(symbol):
     print(" (3) Delete save data,")
     
 def isStationarity(data):
-    result = adfuller(data['Close'])
+    """
+    Performs the Augmented Dickey-Fuller test to check stationarity.
+    """
+    result = adfuller(data)
+    print("Computing the Augmented Dickey-Fuller statistical test...")
+    print(f"Test statistic is {result[1]}")
+    print("")
     return result[1]
 
-def plotACFPACF(data):
-    plt.figure(figsize=(12, 6))
-    plt.subplot(121)
-    plot_acf(data['Close'], lags=40, ax=plt.gca())
-    plt.subplot(122)
-    plot_pacf(data['Close'], lags=40, ax=plt.gca())
-    plt.close()
+def chooseARIMAParameter(data, target_column='Close', max_p=6, max_d=2, max_q=6):
+    choice = input("When training the ARIMA model to produce our forecast, many warnings are likely to occur. Would you like to view warnings or ignore them (I - ignore, anything else - dont ignore)? ")
+    if choice == "i" or choice == "I":
+        warnings.filterwarnings("ignore")
+    
+    print("")
+    print("This may take a moment.")
+    print("Training model...")
+    print("")
+            
+    # Ensure the target_column exists
+    if isinstance(data, pd.DataFrame):
+        if target_column not in data.columns:
+            raise ValueError(f"Column '{target_column}' not found in the dataset.")
+        tempData = data[target_column]
+    else:
+        tempData = data
+    
+    # Initial stationarity check
+    p_value = isStationarity(tempData)
+    
+    differencing_steps = 0
+    
+    # Perform differencing while the data is non-stationary and we haven't exceeded the max differencing
+    while p_value > 0.05 and differencing_steps < max_d:
+        tempData = tempData.diff().dropna()  # First-order differencing
+        differencing_steps += 1
+        p_value = isStationarity(tempData)
+        print(f"After differencing {differencing_steps} times, p-value is: {p_value}")
 
-def chooseARIMAParameter(data):
-    p_value = isStationarity(data)
+    # If the series is still non-stationary after max differencing attempts, print a warning
+    print("")
     if p_value > 0.05:
-        data = data.diff().dropna()
-        
-    plotACFPACF(data)
+        print(f"Data remains non-stationary after {max_d} differencing steps. Consider other transformations.")
+    else:
+        print(f"Data became stationary after {differencing_steps} differencing steps.")
 
+    # Define training and testing data
+    train_size = int(len(tempData) * 0.8)  # Typically 80% for training
+    train, test = tempData[:train_size], tempData[train_size:]
+    
+    # Initialize AIC score tracking for model selection
     best_aic = float('inf')
     best_order = None
-    for p in range(5):
-        for d in range(2):
-            for q in range(5):
+    
+    # Hyperparameter grid search over p, d, q
+    for p in range(1, max_p + 1):
+        for d in range(differencing_steps + 1):  # Based on the differencing steps found
+            for q in range(1, max_q + 1):
                 try:
-                    model = ARIMA(data, order=(p, d, q))
+                    model = ARIMA(train, order=(p, d, q))
                     model_fit = model.fit()
-                    if model_fit.aic < best_aic:
-                        best_aic = model_fit.aic
+                    aic = model_fit.aic
+                    if aic < best_aic:
+                        best_aic = aic
                         best_order = (p, d, q)
+                        best_model = model_fit
                 except Exception as e:
-                    continue
-
+                    print(f"Error fitting model ({p}, {d}, {q}): {e}")
+    
+    print("")
     if best_order is None:
         print("No valid ARIMA model found. Returning default order (1, 0, 0).")
-        return (1, 0, 0)
+        return (1, 0, 0), None
     else:
-        print(f"Best ARIMA model order: {best_order}")
+        print(f"Best ARIMA model order: {best_order} with AIC: {best_aic}")
+        # print(best_model)
+        warnings.resetwarnings()        
         return best_order
 
 def forecastPrices(data, num_days=365):
@@ -71,12 +110,18 @@ def forecastPrices(data, num_days=365):
             raise ValueError("Data must have a 'Date' column or a datetime index.")
     data = data.asfreq('D').interpolate(method='time')
     
-    price_model = ARIMA(data['Close'], order=chooseARIMAParameter(data))
+    Order = chooseARIMAParameter(data)
+    
+    warnings.filterwarnings("ignore")
+    
+    price_model = ARIMA(data['Close'], order=Order)
     price_model_fit = price_model.fit()
     price_forecast = price_model_fit.forecast(steps=num_days)
-    volume_model = ARIMA(data['Volume'], order=(5, 1, 0))
+    volume_model = ARIMA(data['Volume'], order=Order)
     volume_model_fit = volume_model.fit()
     volume_forecast = volume_model_fit.forecast(steps=num_days)
+    
+    warnings.resetwarnings()
 
     last_date = data.index[-1]
     trading_dates = pd.date_range(start=last_date + BDay(1), periods=num_days, freq='B')
@@ -93,6 +138,9 @@ def forecastPrices(data, num_days=365):
     forecast_df = pd.DataFrame(forecast, columns=['Date', 'Close', 'Volume'])
     forecast_df.set_index('Date', inplace=True)
 
+    print("")
+    print("Forecast generated.")
+    print("")
     print(forecast_df)
     return forecast_df
 
@@ -312,7 +360,10 @@ def main():
     '''
     start = 5
     while True:
-        start = int(input("When would you like to test from (1 - 1 year ago, 2 - 2 years ago, ...)? "))
+        try:
+            start = int(input("When would you like to test from (1 - 1 year ago, 2 - 2 years ago, ...)? "))
+        except:
+            print("Input not an integer, choose again")
         if start < 1:
             print("Cannot accept negatives")
         else:
@@ -360,10 +411,12 @@ def main():
             break
         else:
             print("Invalid input. Please enter 'y' or 'n'.")
+            
     print("")
     print("")
-    print(f"Predictions saved to {predictionsOutputFile}.")
-    print(f"Data used saved to {dataOutputFile}.")
+    print(f"Predictions saved to trade_predictions_{symbol}_{end_date}.")
+    print(f"Analysis used saved to analysis_used_{symbol}_{end_date}.")
+    print(f"Data used saved to data_used_{symbol}_{end_date}.")
     print("")
     print("")
     print(f"Historically, returns from {start_date} to {end_date} is {historicalTotalReturns['%TotDiff'].iloc[-1]}")
