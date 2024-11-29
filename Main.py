@@ -144,7 +144,7 @@ def predictions(funcData, method, money, tolerance, parameters):
     
     forecastData = funcData.copy()
     
-    forecastedPrices = Forecast.forecastPrices(forecastData, 200)
+    forecastedPrices = Forecast.forecastPricesHighLowVolume(forecastData, 200, 12)
     
     print("Simulation saved. \n")
     

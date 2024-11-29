@@ -2,7 +2,7 @@ from statsmodels.tsa.stattools import adfuller
 import pandas as pd
 import warnings
 from pandas.tseries.offsets import BDay
-from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 def isStationarity(funcData):
     """
@@ -14,7 +14,7 @@ def isStationarity(funcData):
     print("")
     return result[1]
 
-def chooseARIMAParameter(funcData, targetColumn, max_p=6, max_d=4, max_q=6):
+def chooseSARIMAXParameter(funcData, targetColumn, max_p, max_d, max_q, max_P, max_D, max_Q, m):
     warnings.filterwarnings("ignore")
     
     if isinstance(funcData, pd.DataFrame):
@@ -23,7 +23,7 @@ def chooseARIMAParameter(funcData, targetColumn, max_p=6, max_d=4, max_q=6):
         tempData = funcData[targetColumn]
     else:
         tempData = funcData
-    
+
     # Initial stationarity check
     p_value = isStationarity(tempData)
     
@@ -44,94 +44,155 @@ def chooseARIMAParameter(funcData, targetColumn, max_p=6, max_d=4, max_q=6):
         print(f"The series is still non-stationary after {max_d} differencing steps. Consider alternative transformations.")
 
     # Define training and testing data
-    train_size = int(len(tempData) * 0.8)  # Typically 80% for training
+    train_size = int(len(tempData) * 0.8)
     train, test = tempData[:train_size], tempData[train_size:]
-    
-    # Initialize AIC score tracking for model selection
+
+    # Initialize AIC score tracking
     best_aic = float('inf')
     best_order = None
-    
-    print("This may take a moment.")
-    print(f"Training model for {targetColumn}...")
-    print("")
-    
-    # Hyperparameter grid search over p, d, q
-    for p in range(1, max_p + 1):
-        for d in range(differencing_steps + 1):  # Based on the differencing steps found
-            for q in range(1, max_q + 1):
-                try:
-                    model = ARIMA(train, order=(p, d, q))
-                    model_fit = model.fit()
-                    aic = model_fit.aic
-                    if aic < best_aic:
-                        best_aic = aic
-                        best_order = (p, d, q)
-                        best_model = model_fit
-                except Exception as e:
-                    print(f"Error fitting model ({p}, {d}, {q}): {e}")
-    
-    if best_order is None:
-        print("No valid ARIMA model found. Returning default order (1, 0, 0).")
-        print("")
-        return (1, 0, 0), None
-    else:
-        print(f"Best ARIMA model order: {best_order} with AIC: {best_aic}")
-        print("")
-        # print(best_model)
-        warnings.resetwarnings()        
-        return best_order
+    best_seasonal_order = None
 
-def forecastPrices(funcData, num_days):
-    print("Generating forecast...")
+    print("Searching for the best SARIMAX parameters...")
+    
+    # Hyperparameter grid search over p, d, q, P, D, Q
+    for p in range(max_p + 1):
+        for d in range(differencing_steps + 1):
+            for q in range(max_q + 1):
+                for P in range(max_P + 1):
+                    for D in range(max_D + 1):
+                        for Q in range(max_Q + 1):
+                            try:
+                                model = SARIMAX(
+                                    train,
+                                    order=(p, d, q),
+                                    seasonal_order=(P, D, Q, m),
+                                )
+                                model_fit = model.fit(disp=False)
+                                aic = model_fit.aic
+                                if aic < best_aic:
+                                    best_aic = aic
+                                    best_order = (p, d, q)
+                                    best_seasonal_order = (P, D, Q, m)
+                                    best_model = model_fit
+                            except Exception as e:
+                                pass
+
+    if best_order is None:
+        print("No valid SARIMAX model found. Returning default order (1, 0, 0).")
+        return (1, 0, 0), (0, 0, 0, 0), None
+    else:
+        print(f"Best SARIMAX model order: {best_order}, Seasonal order: {best_seasonal_order} with AIC: {best_aic}")
+        return best_order, best_seasonal_order, best_model
+
+def forecastPricesHighLowVolume(funcData, num_days, m):
+    print("Generating forecast for 'High', 'Low', 'Close', and 'Volume'...")
     print("")
     
-    workingData = funcData
-    
-    if not isinstance(workingData.index, pd.DatetimeIndex):
-        if 'Date' in workingData.columns:
-            workingData['Date'] = pd.to_datetime(workingData['Date'])
-            workingData.set_index('Date', inplace=True)
+    if not isinstance(funcData.index, pd.DatetimeIndex):
+        if 'Date' in funcData.columns:
+            funcData['Date'] = pd.to_datetime(funcData['Date'])
+            funcData.set_index('Date', inplace=True)
         else:
             raise ValueError("Data must have a 'Date' column or a datetime index.")
-    workingData = workingData.asfreq('D').interpolate(method='time')
+    funcData = funcData.asfreq('D').interpolate(method='time')
     
-    priceOrder = chooseARIMAParameter(workingData, 'Close')
-    volumeOrder = chooseARIMAParameter(workingData, 'Volume')
+    max_p, max_d, max_q = 2, 1, 2
+    max_P, max_D, max_Q = 1, 1, 1 
+
+    # SARIMAX for 'Close'
+    closeOrder, closeSeasonalOrder, _ = chooseSARIMAXParameter(funcData, 'Close', max_p, max_d, max_q, max_P, max_D, max_Q, m)
     
+    # SARIMAX for 'Volume'
+    volumeOrder, volumeSeasonalOrder, _ = chooseSARIMAXParameter(funcData, 'Volume', max_p, max_d, max_q, max_P, max_D, max_Q, m)
+
+    # SARIMAX for 'High'
+    highOrder, highSeasonalOrder, _ = chooseSARIMAXParameter(funcData, 'High', max_p, max_d, max_q, max_P, max_D, max_Q, m)
+
+    # SARIMAX for 'Low'
+    lowOrder, lowSeasonalOrder, _ = chooseSARIMAXParameter(funcData, 'Low', max_p, max_d, max_q, max_P, max_D, max_Q, m)
+
     warnings.filterwarnings("ignore")
     
-    # Price forecast using ARIMA
-    price_model = ARIMA(workingData['Close'], order=priceOrder)
+    # Forecast with SARIMAX for 'Close'
+    close_model = SARIMAX(funcData['Close'], order=closeOrder, seasonal_order=closeSeasonalOrder)
+    close_model_fit = close_model.fit()
+    close_forecast = close_model_fit.forecast(steps=num_days)
+    
+    # Forecast with SARIMAX for 'Volume'
+    volume_model = SARIMAX(funcData['Volume'], order=volumeOrder, seasonal_order=volumeSeasonalOrder)
+    volume_model_fit = volume_model.fit()
+    volume_forecast = volume_model_fit.forecast(steps=num_days)
+
+    # Forecast with SARIMAX for 'High'
+    high_model = SARIMAX(funcData['High'], order=highOrder, seasonal_order=highSeasonalOrder)
+    high_model_fit = high_model.fit()
+    high_forecast = high_model_fit.forecast(steps=num_days)
+
+    # Forecast with SARIMAX for 'Low'
+    low_model = SARIMAX(funcData['Low'], order=lowOrder, seasonal_order=lowSeasonalOrder)
+    low_model_fit = low_model.fit()
+    low_forecast = low_model_fit.forecast(steps=num_days)
+    
+    warnings.resetwarnings()
+
+    # Create a date range for forecasting
+    last_date = funcData.index[-1]
+    forecast_dates = pd.date_range(start=last_date + BDay(1), periods=num_days, freq='B')
+
+    forecast_df = pd.DataFrame({
+        'Date': forecast_dates,
+        'High': high_forecast,
+        'Low': low_forecast,
+        'Close': close_forecast,
+        'Volume': volume_forecast
+    }).set_index('Date')
+
+    print("Forecast generated.")
+    return forecast_df
+
+    print("Generating forecast for 'Close' and 'Volume'...")
+    print("")
+    
+    if not isinstance(funcData.index, pd.DatetimeIndex):
+        if 'Date' in funcData.columns:
+            funcData['Date'] = pd.to_datetime(funcData['Date'])
+            funcData.set_index('Date', inplace=True)
+        else:
+            raise ValueError("Data must have a 'Date' column or a datetime index.")
+    funcData = funcData.asfreq('D').interpolate(method='time')
+    
+    max_p, max_d, max_q = 2, 1, 2
+    max_P, max_D, max_Q = 1, 1, 1 
+
+    # SARIMAX for 'Close'
+    priceOrder, priceSeasonalOrder, _ = chooseSARIMAXParameter(funcData, 'Close', max_p, max_d, max_q, max_P, max_D, max_Q, m)
+    
+    # SARIMAX for 'Volume'
+    volumeOrder, volumeSeasonalOrder, _ = chooseSARIMAXParameter(funcData, 'Volume', max_p, max_d, max_q, max_P, max_D, max_Q, m)
+
+    warnings.filterwarnings("ignore")
+    
+    # Forecast with SARIMAX for 'Close'
+    price_model = SARIMAX(funcData['Close'], order=priceOrder, seasonal_order=priceSeasonalOrder)
     price_model_fit = price_model.fit()
     price_forecast = price_model_fit.forecast(steps=num_days)
     
-    # Volume forecast using ARIMA
-    volume_model = ARIMA(workingData['Volume'], order=volumeOrder)
+    # Forecast with SARIMAX for 'Volume'
+    volume_model = SARIMAX(funcData['Volume'], order=volumeOrder, seasonal_order=volumeSeasonalOrder)
     volume_model_fit = volume_model.fit()
     volume_forecast = volume_model_fit.forecast(steps=num_days)
     
     warnings.resetwarnings()
-    
+
     # Create a date range for forecasting
-    last_date = workingData.index[-1]
-    trading_dates = pd.date_range(start=last_date + BDay(1), periods=num_days, freq='B')
+    last_date = funcData.index[-1]
+    forecast_dates = pd.date_range(start=last_date + BDay(1), periods=num_days, freq='B')
 
-    forecast = []
-    for i in range(num_days):
-        forecasted_price = price_forecast[i]
-        forecasted_volume = volume_forecast[i]
-        
-        # Simulate High and Low prices based on Close price and a percentage range
-        # Here, we're assuming that the High is 2% above Close, and Low is 2% below Close.
-        forecasted_high = forecasted_price * 1.02
-        forecasted_low = forecasted_price * 0.98
-        
-        forecast_date = trading_dates[i]
-        forecast.append([forecast_date, forecasted_price, forecasted_high, forecasted_low, forecasted_volume])
+    forecast_df = pd.DataFrame({
+        'Date': forecast_dates,
+        'Close': price_forecast,
+        'Volume': volume_forecast
+    }).set_index('Date')
 
-    # Create the DataFrame with forecasted data
-    forecast_df = pd.DataFrame(forecast, columns=['Date', 'Close', 'High', 'Low', 'Volume'])
-    forecast_df.set_index('Date', inplace=True)
-
-    print("Forecast generated. \n")
+    print("Forecast generated.")
     return forecast_df

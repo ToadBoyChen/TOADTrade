@@ -127,6 +127,7 @@ def computeBollingerBands(data, window):
 def computeOBV(data):
     obv = [0]
     signals = [0]
+
     try:    
         for i in range(1, len(data)):
             if data['Close'].iloc[i].values[0] > data['Close'].iloc[i - 1].values[0]:
