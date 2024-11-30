@@ -239,7 +239,6 @@ def getTolerance():
         5: Very risky         - trying to gamble on making lots of money
         
     '''
-
     tolerance = 3
 
     return tolerance
@@ -249,8 +248,6 @@ def main():
     method = method1 # Method by which we develop signals
     parameters = {'shortWindow': 10, 'longWindow': 20, 'RSIWindow': 14, 'bollingerBands' : 20, 'ATR' : 14, 'stochasticOscillator' : 14}
     symbol = getSymbol()
-    
-    print("")
     
     start = 5
     while True:
@@ -262,8 +259,6 @@ def main():
             print("Cannot accept negatives")
         else:
             break
-    
-    print("")
     
     start_date, end_date = getDates(start, 0)
     
