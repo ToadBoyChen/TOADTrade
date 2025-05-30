@@ -1,5 +1,6 @@
 from datetime import datetime
 import yfinance as yf
+import pandas as pd
 import os
 from dateutil.relativedelta import relativedelta
 import Indicators
@@ -25,8 +26,29 @@ def getSymbol():
             print(f"An error occurred: {e}. Please try again.")
 
 def getData(symbol, start_date, end_date):
-    data = yf.download(symbol, start=start_date, end=end_date)
+    """
+    Fetch historical stock data for a given symbol and date range.
+    
+    Args:
+        symbol (str): Stock ticker symbol (e.g., 'AAPL', 'TSLA')
+        start_date (str): Start date in 'YYYY-MM-DD' format
+        end_date (str): End date in 'YYYY-MM-DD' format
+    
+    Returns:
+        pandas.DataFrame: Historical stock data with OHLCV columns
+    """
+    print(f"Fetching data for {symbol} from {start_date} to {end_date}...")
+    
+    # Download data with auto_adjust=False to get consistent column structure
+    data = yf.download(symbol, start=start_date, end=end_date, auto_adjust=False, progress=False)
+    
+    # Handle multi-level columns from yf.download
+    if isinstance(data.columns, pd.MultiIndex):
+        # Flatten multi-level columns by taking the first level (price type)
+        data.columns = data.columns.get_level_values(0)
+    
     isEmpty(data)
+    print(f"Successfully fetched {len(data)} days of data.")
     return data
 
 def isEmpty(funcData):
@@ -50,44 +72,103 @@ def method1(funcData, parameters):
     return stochasticOscillator
 
 def buyAndSell(funcData, money, weight):
-    '''
-    Backtest a simple trading strategy with buying and selling signals.
+    """
+    Backtest a trading strategy based on weighted signals.
     
-    - Signals >= weight: Buy
-    - Signals <= -weight: Sell
-    - Otherwise: Hold
-    '''
-    workingData = funcData
-    strategyPortfolio = [0]
-    signals = workingData['Signals'].values.tolist()
-    stockGainLoss = workingData['%Diff'].values.tolist()
-
-    buy_signals = sum(1 for signal in signals if signal >= weight)
-
-    purchasingPower = money / buy_signals if buy_signals > 0 else 0
-    sellingPower = purchasingPower
-    totalSpent = [0]
-
+    Strategy Logic:
+    - Signal >= weight: Buy signal (go long)
+    - Signal <= -weight: Sell signal (go short or exit long)
+    - Otherwise: Hold current position
+    
+    Args:
+        funcData (pandas.DataFrame): Data with 'Signals' column
+        money (float): Initial capital
+        weight (float): Signal threshold for trading decisions
+    
+    Returns:
+        pandas.DataFrame: Data with added trading simulation columns
+    """
+    workingData = funcData.copy()
+    
+    # Ensure we have percentage returns calculated
+    if '%Diff' not in workingData.columns:
+        workingData = getPercentages(workingData, money)
+    
+    signals = workingData['Signals'].values
+    daily_returns = workingData['%Diff'].values  # Daily return factors (1.05 = 5% gain)
+    
+    # Initialize tracking variables
+    portfolio_values = [money]  # Portfolio value over time
+    cash_position = [money]     # Cash available
+    stock_position = [0]        # Value of stock holdings
+    shares_held = [0]           # Number of shares held
+    total_trades = 0
+    buy_trades = 0
+    sell_trades = 0
+    
+    # Get close prices for share calculations
+    close_prices = workingData['Close'].values
+    
     for i in range(1, len(signals)):
-        if signals[i] >= weight:
-            totalSpent.append(totalSpent[-1] + purchasingPower)
-            strategyPortfolio.append(strategyPortfolio[i - 1] + purchasingPower * (stockGainLoss[i]))
-        elif signals[i] <= -weight:
-            if strategyPortfolio[i - 1] - sellingPower >= 0:
-                totalSpent.append(totalSpent[-1])
-                strategyPortfolio.append(strategyPortfolio[i - 1] - (sellingPower * (stockGainLoss[i])))
-            else:
-                totalSpent.append(totalSpent[-1])
-                strategyPortfolio.append(strategyPortfolio[i - 1])
+        prev_cash = cash_position[-1]
+        prev_shares = shares_held[-1]
+        current_price = close_prices[i]
+        
+        # Calculate current value of stock holdings
+        current_stock_value = prev_shares * current_price
+        
+        if signals[i] >= weight and prev_cash > 0:
+            # Buy signal: invest available cash
+            shares_to_buy = prev_cash / current_price
+            new_shares = prev_shares + shares_to_buy
+            new_cash = 0  # All cash invested
+            buy_trades += 1
+            total_trades += 1
+            
+        elif signals[i] <= -weight and prev_shares > 0:
+            # Sell signal: sell all shares
+            new_cash = prev_cash + (prev_shares * current_price)
+            new_shares = 0
+            sell_trades += 1
+            total_trades += 1
+            
         else:
-            totalSpent.append(totalSpent[-1])
-            strategyPortfolio.append(strategyPortfolio[i - 1])
-
-    workingData['TSpent'] = totalSpent
-    workingData['AlgoPort'] = strategyPortfolio
-
-    print(f"Total spent on buying: {totalSpent[-1]}, Total value of portfolio after trading: {strategyPortfolio[-1]} \n")
-
+            # Hold: maintain current position
+            new_cash = prev_cash
+            new_shares = prev_shares
+        
+        # Update tracking arrays
+        cash_position.append(new_cash)
+        shares_held.append(new_shares)
+        stock_value = new_shares * current_price
+        stock_position.append(stock_value)
+        total_portfolio = new_cash + stock_value
+        portfolio_values.append(total_portfolio)
+    
+    # Add results to dataframe
+    workingData['Cash'] = cash_position
+    workingData['Shares'] = shares_held
+    workingData['StockValue'] = stock_position
+    workingData['AlgoPort'] = portfolio_values
+    
+    # Calculate strategy returns
+    strategy_returns = [portfolio_values[i] / portfolio_values[i-1] if i > 0 else 1 for i in range(len(portfolio_values))]
+    workingData['StrategyReturns'] = strategy_returns
+    
+    # Calculate cumulative strategy performance
+    cumulative_strategy_returns = pd.Series(strategy_returns).cumprod()
+    workingData['%TotDiff'] = cumulative_strategy_returns
+    
+    final_value = portfolio_values[-1]
+    total_return = (final_value / money - 1) * 100
+    
+    print(f"Trading Strategy Results:")
+    print(f"  Initial capital: ${money:,.2f}")
+    print(f"  Final portfolio value: ${final_value:,.2f}")
+    print(f"  Total return: {total_return:.2f}%")
+    print(f"  Total trades: {total_trades} (Buy: {buy_trades}, Sell: {sell_trades})")
+    print(f"  Final position: ${cash_position[-1]:,.2f} cash + {shares_held[-1]:.2f} shares\n")
+    
     return workingData
 
 
@@ -104,25 +185,41 @@ def backTest(funcData, money, tolerance):
     return backTestData
     
 def generateWeightedSignals(funcData):
+    """
+    Generate weighted trading signals by combining all individual indicator signals.
+    
+    Args:
+        funcData (pandas.DataFrame): DataFrame containing individual signal columns (SigMA, SigRSI, etc.)
+    
+    Returns:
+        None: Modifies funcData in place by adding 'Signals' column
+    """
     signals = {}
-    
     weightedSignals = []
-    
     tempData = funcData
     
-    for header in tempData.columns.get_level_values(0):
-        if "Sig" in header:
-            signals[header] = tempData[header].values.tolist()  
-
+    # Find all signal columns (columns that start with 'Sig')
+    signal_columns = [col for col in tempData.columns if col.startswith('Sig')]
+    
+    if not signal_columns:
+        print("Warning: No signal columns found. Creating default signals of 0.")
+        tempData['Signals'] = [0] * len(tempData)
+        return
+    
+    # Extract signal data from each column
+    for header in signal_columns:
+        signals[header] = tempData[header].values.tolist()
+    
+    # Combine all signals by summing them
     for header in signals.keys():
         if len(weightedSignals) < 1:
-            weightedSignals = signals[header]
+            weightedSignals = signals[header].copy()  # Use copy to avoid reference issues
         else:
-            for i in range(0, len(signals[header])):
+            for i in range(len(signals[header])):
                 weightedSignals[i] = weightedSignals[i] + signals[header][i]
-          
-    print("Generating weighted signals... \n")  
-    # print(weightedSignals, "\n")
+    
+    print(f"Generated weighted signals from {len(signal_columns)} indicators: {signal_columns}")
+    print(f"Signal range: {min(weightedSignals):.2f} to {max(weightedSignals):.2f}\n")
     
     tempData['Signals'] = weightedSignals
 
@@ -195,37 +292,41 @@ def getDates(start, end):
     return start_date, end_date
 
 def getPercentages(funcData, money):
+    """
+    Calculate percentage returns and cumulative performance metrics.
+    
+    Args:
+        funcData (pandas.DataFrame): Stock data with 'Close' column
+        money (float): Initial investment amount
+    
+    Returns:
+        pandas.DataFrame: Data with added percentage return columns
+    """
     percentData = funcData.copy()
-    try:
-        close = [x[0] for x in percentData['Close'].values.tolist()]
-    except:
-        close = percentData['Close']
     
-    percentReturns = []
+    # Get close prices as a pandas Series
+    close_prices = percentData['Close']
     
-    try:
-        for i in range(1, len(close)):
-            percentReturns.append(close.iloc[i]/close.iloc[i-1])
-    except:
-         for i in range(1, len(close)):
-            percentReturns.append(close[i]/close[i-1])       
-        
-    percentReturns.insert(0, 1)    
-    percentData['%Diff'] = percentReturns
+    # Calculate daily percentage returns (price[t] / price[t-1])
+    # This gives us the daily return factor (1.05 = 5% gain, 0.95 = 5% loss)
+    daily_returns = close_prices.pct_change() + 1  # pct_change() gives (p[t]-p[t-1])/p[t-1], so add 1
+    daily_returns.iloc[0] = 1  # Set first day return to 1 (no change from non-existent previous day)
     
-    cumulativePercentageReturns = [1]
-    for i in range(1, len(percentReturns)):
-        cumulativePercentageReturns.append(cumulativePercentageReturns[-1] * percentReturns[i])
-        
-    percentData['%TotDiff'] = cumulativePercentageReturns
+    percentData['%Diff'] = daily_returns
     
-    portfolioValue = [money]
+    # Calculate cumulative returns (compound growth)
+    cumulative_returns = daily_returns.cumprod()
+    percentData['%TotDiff'] = cumulative_returns
     
-    for i in range(1, len(percentReturns)):
-        portfolioValue.append(portfolioValue[-1] * percentReturns[i])
-        
-    percentData['Portfolio'] = portfolioValue
-
+    # Calculate portfolio value over time (buy and hold strategy)
+    portfolio_values = money * cumulative_returns
+    percentData['Portfolio'] = portfolio_values
+    
+    print(f"Performance calculation complete:")
+    print(f"  Initial investment: ${money:,.2f}")
+    print(f"  Final portfolio value: ${portfolio_values.iloc[-1]:,.2f}")
+    print(f"  Total return: {(cumulative_returns.iloc[-1] - 1) * 100:.2f}%")
+    
     return percentData
 
 def getTolerance():
