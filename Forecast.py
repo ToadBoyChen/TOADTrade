@@ -85,67 +85,42 @@ def chooseSARIMAXParameter(funcData, targetColumn, max_p, max_d, max_q, max_P, m
         return best_order, best_seasonal_order, best_model
 
 def forecastPricesHighLowVolume(funcData, num_days, m):
-    print("Generating forecast for 'High', 'Low', 'Close', and 'Volume'...")
-    print("")
+    """
+    Generate forecast for 'High', 'Low', 'Close', and 'Volume'.
+    """
+    if funcData.empty or not isinstance(funcData.index, pd.DatetimeIndex):
+        print("Insufficient or invalid data for forecasting.")
+        return pd.DataFrame()
     
-    if not isinstance(funcData.index, pd.DatetimeIndex):
-        if 'Date' in funcData.columns:
-            funcData['Date'] = pd.to_datetime(funcData['Date'])
-            funcData.set_index('Date', inplace=True)
-        else:
-            raise ValueError("Data must have a 'Date' column or a datetime index.")
     funcData = funcData.asfreq('D').interpolate(method='time')
-    
     max_p, max_d, max_q = 2, 1, 2
     max_P, max_D, max_Q = 1, 1, 1 
 
-    # SARIMAX for 'Close'
-    closeOrder, closeSeasonalOrder, _ = chooseSARIMAXParameter(funcData, 'Close', max_p, max_d, max_q, max_P, max_D, max_Q, m)
-    
-    # SARIMAX for 'Volume'
-    volumeOrder, volumeSeasonalOrder, _ = chooseSARIMAXParameter(funcData, 'Volume', max_p, max_d, max_q, max_P, max_D, max_Q, m)
+    try:
+        closeOrder, closeSeasonalOrder, _ = chooseSARIMAXParameter(funcData, 'Close', max_p, max_d, max_q, max_P, max_D, max_Q, m)
+        volumeOrder, volumeSeasonalOrder, _ = chooseSARIMAXParameter(funcData, 'Volume', max_p, max_d, max_q, max_P, max_D, max_Q, m)
+        highOrder, highSeasonalOrder, _ = chooseSARIMAXParameter(funcData, 'High', max_p, max_d, max_q, max_P, max_D, max_Q, m)
+        lowOrder, lowSeasonalOrder, _ = chooseSARIMAXParameter(funcData, 'Low', max_p, max_d, max_q, max_P, max_D, max_Q, m)
+    except Exception as e:
+        print(f"Error during SARIMAX parameter selection: {e}")
+        return pd.DataFrame()
 
-    # SARIMAX for 'High'
-    highOrder, highSeasonalOrder, _ = chooseSARIMAXParameter(funcData, 'High', max_p, max_d, max_q, max_P, max_D, max_Q, m)
+    try:
+        close_model = SARIMAX(funcData['Close'], order=closeOrder, seasonal_order=closeSeasonalOrder).fit()
+        volume_model = SARIMAX(funcData['Volume'], order=volumeOrder, seasonal_order=volumeSeasonalOrder).fit()
+        high_model = SARIMAX(funcData['High'], order=highOrder, seasonal_order=highSeasonalOrder).fit()
+        low_model = SARIMAX(funcData['Low'], order=lowOrder, seasonal_order=lowSeasonalOrder).fit()
+        
+        forecast_dates = pd.date_range(start=funcData.index[-1] + BDay(1), periods=num_days, freq='B')
+        forecast_df = pd.DataFrame({
+            'Date': forecast_dates,
+            'High': high_model.forecast(steps=num_days),
+            'Low': low_model.forecast(steps=num_days),
+            'Close': close_model.forecast(steps=num_days),
+            'Volume': volume_model.forecast(steps=num_days)
+        }).set_index('Date')
+    except Exception as e:
+        print(f"Error during forecasting: {e}")
+        return pd.DataFrame()
 
-    # SARIMAX for 'Low'
-    lowOrder, lowSeasonalOrder, _ = chooseSARIMAXParameter(funcData, 'Low', max_p, max_d, max_q, max_P, max_D, max_Q, m)
-
-    warnings.filterwarnings("ignore")
-    
-    # Forecast with SARIMAX for 'Close'
-    close_model = SARIMAX(funcData['Close'], order=closeOrder, seasonal_order=closeSeasonalOrder)
-    close_model_fit = close_model.fit()
-    close_forecast = close_model_fit.forecast(steps=num_days)
-    
-    # Forecast with SARIMAX for 'Volume'
-    volume_model = SARIMAX(funcData['Volume'], order=volumeOrder, seasonal_order=volumeSeasonalOrder)
-    volume_model_fit = volume_model.fit()
-    volume_forecast = volume_model_fit.forecast(steps=num_days)
-
-    # Forecast with SARIMAX for 'High'
-    high_model = SARIMAX(funcData['High'], order=highOrder, seasonal_order=highSeasonalOrder)
-    high_model_fit = high_model.fit()
-    high_forecast = high_model_fit.forecast(steps=num_days)
-
-    # Forecast with SARIMAX for 'Low'
-    low_model = SARIMAX(funcData['Low'], order=lowOrder, seasonal_order=lowSeasonalOrder)
-    low_model_fit = low_model.fit()
-    low_forecast = low_model_fit.forecast(steps=num_days)
-    
-    warnings.resetwarnings()
-
-    # Create a date range for forecasting
-    last_date = funcData.index[-1]
-    forecast_dates = pd.date_range(start=last_date + BDay(1), periods=num_days, freq='B')
-
-    forecast_df = pd.DataFrame({
-        'Date': forecast_dates,
-        'High': high_forecast,
-        'Low': low_forecast,
-        'Close': close_forecast,
-        'Volume': volume_forecast
-    }).set_index('Date')
-
-    print("Forecast generated.")
     return forecast_df

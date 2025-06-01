@@ -7,6 +7,108 @@ import Indicators
 import Forecast
 import json
 import os
+import itertools
+import concurrent.futures
+
+def optimize_parameters(symbol, start_date, end_date, money=1000, test_mode=False):
+    """
+    Optimize trading strategy parameters for a specific stock.
+    
+    Args:
+        symbol (str): Stock ticker symbol
+        start_date (str): Start date in 'YYYY-MM-DD' format
+        end_date (str): End date in 'YYYY-MM-DD' format
+        money (float): Initial capital for backtesting
+        test_mode (bool): Whether to run in test mode
+        
+    Returns:
+        dict: Optimized parameters
+        float: Best performance metric
+    """
+    print(f"\nOptimizing parameters for {symbol}...")
+    
+    # Get historical data
+    data = getData(symbol, start_date, end_date)
+    
+    # Define parameter ranges to test
+    param_grid = {
+        'shortWindow': [5, 10, 15, 20],
+        'longWindow': [20, 30, 40, 50],
+        'RSIWindow': [7, 14, 21],
+        'bollingerBands': [15, 20, 25],
+        'ATR': [7, 14, 21],
+        'stochasticOscillator': [7, 14, 21]
+    }
+    
+    # Ensure longWindow is always greater than shortWindow
+    param_combinations = []
+    for short in param_grid['shortWindow']:
+        for long in param_grid['longWindow']:
+            if long > short:
+                for rsi in param_grid['RSIWindow']:
+                    for bb in param_grid['bollingerBands']:
+                        for atr in param_grid['ATR']:
+                            for stoch in param_grid['stochasticOscillator']:
+                                param_combinations.append({
+                                    'shortWindow': short,
+                                    'longWindow': long,
+                                    'RSIWindow': rsi,
+                                    'bollingerBands': bb,
+                                    'ATR': atr,
+                                    'stochasticOscillator': stoch
+                                })
+    
+    print(f"Testing {len(param_combinations)} parameter combinations...")
+    
+    # Function to test a single parameter combination
+    def test_params(params):
+        try:
+            # Generate signals with the current parameters
+            test_data = generateSignals(data.copy(), method1, params)
+            
+            # Run backtest with a fixed tolerance
+            tolerance = 3  # Using balanced tolerance
+            backtest_results = backTest(test_data, money, tolerance)
+            
+            # Get final portfolio value as performance metric
+            final_value = backtest_results['AlgoPort'].iloc[-1]
+            return params, final_value
+        except Exception as e:
+            print(f"Error testing parameters: {e}")
+            return params, 0
+    
+    # Use parallel processing to speed up optimization
+    best_params = None
+    best_performance = 0
+    
+    # Progress tracking
+    total_combinations = len(param_combinations)
+    completed = 0
+    
+    # Use ThreadPoolExecutor for parallel processing
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        future_to_params = {executor.submit(test_params, params): params for params in param_combinations}
+        
+        for future in concurrent.futures.as_completed(future_to_params):
+            params, performance = future.result()
+            completed += 1
+            
+            # Print progress every 10%
+            if completed % max(1, total_combinations // 10) == 0:
+                print(f"Progress: {completed}/{total_combinations} combinations tested ({completed/total_combinations*100:.1f}%)")
+            
+            if performance > best_performance:
+                best_performance = performance
+                best_params = params
+    
+    initial_performance = money
+    percent_improvement = ((best_performance - initial_performance) / initial_investment) * 100
+    
+    print(f"\nOptimization complete!")
+    print(f"Best parameters: {best_params}")
+    print(f"Best performance: ${best_performance:.2f} (ROI: {percent_improvement:.2f}%)")
+    
+    return best_params, best_performance
 
 def save_optimized_parameters(symbol, params):
     """Save optimized parameters for a stock to a JSON file"""
@@ -56,26 +158,22 @@ def getSymbol():
 def getData(symbol, start_date, end_date):
     """
     Fetch historical stock data for a given symbol and date range.
-    
-    Args:
-        symbol (str): Stock ticker symbol (e.g., 'AAPL', 'TSLA')
-        start_date (str): Start date in 'YYYY-MM-DD' format
-        end_date (str): End date in 'YYYY-MM-DD' format
-    
-    Returns:
-        pandas.DataFrame: Historical stock data with OHLCV columns
     """
     print(f"Fetching data for {symbol} from {start_date} to {end_date}...")
     
-    # Download data with auto_adjust=False to get consistent column structure
-    data = yf.download(symbol, start=start_date, end=end_date, auto_adjust=False, progress=False)
+    try:
+        data = yf.download(symbol, start=start_date, end=end_date, auto_adjust=False, progress=False)
+    except Exception as e:
+        print(f"Error fetching data for {symbol}: {e}")
+        return None
     
-    # Handle multi-level columns from yf.download
     if isinstance(data.columns, pd.MultiIndex):
-        # Flatten multi-level columns by taking the first level (price type)
         data.columns = data.columns.get_level_values(0)
     
-    isEmpty(data)
+    if data.empty or len(data) < 10:
+        print(f"Failed to fetch sufficient data for {symbol}. Data is empty or insufficient.")
+        return None
+    
     print(f"Successfully fetched {len(data)} days of data.")
     return data
 
@@ -198,7 +296,6 @@ def buyAndSell(funcData, money, weight):
     print(f"  Final position: ${cash_position[-1]:,.2f} cash + {shares_held[-1]:.2f} shares\n")
     
     return workingData
-
 
     
 def backTest(funcData, money, tolerance):
@@ -395,109 +492,6 @@ def handle_user_choice(symbol):
         elif choice == "3":
             return "restart"
         print("Invalid input. Please enter 1, 2, or 3.")
-        
-import itertools
-import concurrent.futures
-
-def optimize_parameters(symbol, start_date, end_date, money=1000, test_mode=False):
-    """
-    Optimize trading strategy parameters for a specific stock.
-    
-    Args:
-        symbol (str): Stock ticker symbol
-        start_date (str): Start date in 'YYYY-MM-DD' format
-        end_date (str): End date in 'YYYY-MM-DD' format
-        money (float): Initial capital for backtesting
-        test_mode (bool): Whether to run in test mode
-        
-    Returns:
-        dict: Optimized parameters
-        float: Best performance metric
-    """
-    print(f"\nOptimizing parameters for {symbol}...")
-    
-    # Get historical data
-    data = getData(symbol, start_date, end_date)
-    
-    # Define parameter ranges to test
-    param_grid = {
-        'shortWindow': [5, 10, 15, 20],
-        'longWindow': [20, 30, 40, 50],
-        'RSIWindow': [7, 14, 21],
-        'bollingerBands': [15, 20, 25],
-        'ATR': [7, 14, 21],
-        'stochasticOscillator': [7, 14, 21]
-    }
-    
-    # Ensure longWindow is always greater than shortWindow
-    param_combinations = []
-    for short in param_grid['shortWindow']:
-        for long in param_grid['longWindow']:
-            if long > short:
-                for rsi in param_grid['RSIWindow']:
-                    for bb in param_grid['bollingerBands']:
-                        for atr in param_grid['ATR']:
-                            for stoch in param_grid['stochasticOscillator']:
-                                param_combinations.append({
-                                    'shortWindow': short,
-                                    'longWindow': long,
-                                    'RSIWindow': rsi,
-                                    'bollingerBands': bb,
-                                    'ATR': atr,
-                                    'stochasticOscillator': stoch
-                                })
-    
-    print(f"Testing {len(param_combinations)} parameter combinations...")
-    
-    # Function to test a single parameter combination
-    def test_params(params):
-        try:
-            # Generate signals with the current parameters
-            test_data = generateSignals(data.copy(), method1, params)
-            
-            # Run backtest with a fixed tolerance
-            tolerance = 3  # Using balanced tolerance
-            backtest_results = backTest(test_data, money, tolerance)
-            
-            # Get final portfolio value as performance metric
-            final_value = backtest_results['AlgoPort'].iloc[-1]
-            return params, final_value
-        except Exception as e:
-            print(f"Error testing parameters: {e}")
-            return params, 0
-    
-    # Use parallel processing to speed up optimization
-    best_params = None
-    best_performance = 0
-    
-    # Progress tracking
-    total_combinations = len(param_combinations)
-    completed = 0
-    
-    # Use ThreadPoolExecutor for parallel processing
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        future_to_params = {executor.submit(test_params, params): params for params in param_combinations}
-        
-        for future in concurrent.futures.as_completed(future_to_params):
-            params, performance = future.result()
-            completed += 1
-            
-            # Print progress every 10%
-            if completed % max(1, total_combinations // 10) == 0:
-                print(f"Progress: {completed}/{total_combinations} combinations tested ({completed/total_combinations*100:.1f}%)")
-            
-            if performance > best_performance:
-                best_performance = performance
-                best_params = params
-    
-    initial_performance = money
-    percent_improvement = ((best_performance - initial_performance) / initial_performance) * 100
-    
-    print(f"\nOptimization complete!")
-    print(f"Best parameters: {best_params}")
-    print(f"Best performance: ${best_performance:.2f} (ROI: {percent_improvement:.2f}%)")
-    
-    return best_params, best_performance
 
 def display_results(historicalTotalReturns, strategyTotalReturns, symbol, start_date, end_date):
     """Display comparison of buy-and-hold vs. strategy performance"""
