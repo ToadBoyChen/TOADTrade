@@ -102,7 +102,7 @@ def optimize_parameters(symbol, start_date, end_date, money=1000, test_mode=Fals
                 best_params = params
     
     initial_performance = money
-    percent_improvement = ((best_performance - initial_performance) / initial_investment) * 100
+    percent_improvement = ((best_performance - initial_performance) / initial_performance) * 100
     
     print(f"\nOptimization complete!")
     print(f"Best parameters: {best_params}")
@@ -555,7 +555,10 @@ def main(params=None, test_mode=False):
     
     # For test mode, return early with just the returns
     if test_mode:
-        return float(strategyTotalReturns['%TotDiff'].iloc[-1])
+        # Return the final portfolio value as a ratio of initial investment
+        final_value = strategyTotalReturns['AlgoPort'].iloc[-1]
+        initial_value = money
+        return float(final_value / initial_value)
         
     predict = predictions(data, method, money, tolerance, params)
     outputToFiles(data, predict, symbol, end_date)
