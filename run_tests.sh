@@ -1,2 +1,2 @@
 #!/bin/sh
-cd /app && python -m pytest tests/ -v
+python -m pytest tests/

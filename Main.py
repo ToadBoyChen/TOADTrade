@@ -5,6 +5,34 @@ import os
 from dateutil.relativedelta import relativedelta
 import Indicators
 import Forecast
+import json
+import os
+
+def save_optimized_parameters(symbol, params):
+    """Save optimized parameters for a stock to a JSON file"""
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    params_dir = os.path.join(current_dir, "optimized_params")
+    os.makedirs(params_dir, exist_ok=True)
+    
+    params_file = os.path.join(params_dir, f"{symbol}_params.json")
+    
+    with open(params_file, 'w') as f:
+        json.dump(params, f, indent=4)
+    
+    print(f"Optimized parameters saved to {params_file}")
+
+def load_optimized_parameters(symbol):
+    """Load optimized parameters for a stock from a JSON file if available"""
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    params_file = os.path.join(current_dir, "optimized_params", f"{symbol}_params.json")
+    
+    if os.path.exists(params_file):
+        with open(params_file, 'r') as f:
+            params = json.load(f)
+        print(f"Loaded optimized parameters for {symbol}")
+        return params
+    
+    return None
 
 def workWithData(symbol):
     print(f"Options for analysis of {symbol}:")
@@ -367,27 +395,165 @@ def handle_user_choice(symbol):
         elif choice == "3":
             return "restart"
         print("Invalid input. Please enter 1, 2, or 3.")
+        
+import itertools
+import concurrent.futures
+
+def optimize_parameters(symbol, start_date, end_date, money=1000, test_mode=False):
+    """
+    Optimize trading strategy parameters for a specific stock.
+    
+    Args:
+        symbol (str): Stock ticker symbol
+        start_date (str): Start date in 'YYYY-MM-DD' format
+        end_date (str): End date in 'YYYY-MM-DD' format
+        money (float): Initial capital for backtesting
+        test_mode (bool): Whether to run in test mode
+        
+    Returns:
+        dict: Optimized parameters
+        float: Best performance metric
+    """
+    print(f"\nOptimizing parameters for {symbol}...")
+    
+    # Get historical data
+    data = getData(symbol, start_date, end_date)
+    
+    # Define parameter ranges to test
+    param_grid = {
+        'shortWindow': [5, 10, 15, 20],
+        'longWindow': [20, 30, 40, 50],
+        'RSIWindow': [7, 14, 21],
+        'bollingerBands': [15, 20, 25],
+        'ATR': [7, 14, 21],
+        'stochasticOscillator': [7, 14, 21]
+    }
+    
+    # Ensure longWindow is always greater than shortWindow
+    param_combinations = []
+    for short in param_grid['shortWindow']:
+        for long in param_grid['longWindow']:
+            if long > short:
+                for rsi in param_grid['RSIWindow']:
+                    for bb in param_grid['bollingerBands']:
+                        for atr in param_grid['ATR']:
+                            for stoch in param_grid['stochasticOscillator']:
+                                param_combinations.append({
+                                    'shortWindow': short,
+                                    'longWindow': long,
+                                    'RSIWindow': rsi,
+                                    'bollingerBands': bb,
+                                    'ATR': atr,
+                                    'stochasticOscillator': stoch
+                                })
+    
+    print(f"Testing {len(param_combinations)} parameter combinations...")
+    
+    # Function to test a single parameter combination
+    def test_params(params):
+        try:
+            # Generate signals with the current parameters
+            test_data = generateSignals(data.copy(), method1, params)
+            
+            # Run backtest with a fixed tolerance
+            tolerance = 3  # Using balanced tolerance
+            backtest_results = backTest(test_data, money, tolerance)
+            
+            # Get final portfolio value as performance metric
+            final_value = backtest_results['AlgoPort'].iloc[-1]
+            return params, final_value
+        except Exception as e:
+            print(f"Error testing parameters: {e}")
+            return params, 0
+    
+    # Use parallel processing to speed up optimization
+    best_params = None
+    best_performance = 0
+    
+    # Progress tracking
+    total_combinations = len(param_combinations)
+    completed = 0
+    
+    # Use ThreadPoolExecutor for parallel processing
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        future_to_params = {executor.submit(test_params, params): params for params in param_combinations}
+        
+        for future in concurrent.futures.as_completed(future_to_params):
+            params, performance = future.result()
+            completed += 1
+            
+            # Print progress every 10%
+            if completed % max(1, total_combinations // 10) == 0:
+                print(f"Progress: {completed}/{total_combinations} combinations tested ({completed/total_combinations*100:.1f}%)")
+            
+            if performance > best_performance:
+                best_performance = performance
+                best_params = params
+    
+    initial_performance = money
+    percent_improvement = ((best_performance - initial_performance) / initial_performance) * 100
+    
+    print(f"\nOptimization complete!")
+    print(f"Best parameters: {best_params}")
+    print(f"Best performance: ${best_performance:.2f} (ROI: {percent_improvement:.2f}%)")
+    
+    return best_params, best_performance
+
+def display_results(historicalTotalReturns, strategyTotalReturns, symbol, start_date, end_date):
+    """Display comparison of buy-and-hold vs. strategy performance"""
+    buy_hold_final = historicalTotalReturns['Portfolio'].iloc[-1]
+    strategy_final = strategyTotalReturns['AlgoPort'].iloc[-1]
+    initial_investment = historicalTotalReturns['Portfolio'].iloc[0]
+    
+    buy_hold_return = ((buy_hold_final / initial_investment) - 1) * 100
+    strategy_return = ((strategy_final / initial_investment) - 1) * 100
+    
+    print("\n" + "="*50)
+    print(f"PERFORMANCE SUMMARY FOR {symbol}: {start_date} to {end_date}")
+    print("="*50)
+    print(f"Initial investment: ${initial_investment:.2f}")
+    print(f"Buy & Hold strategy: ${buy_hold_final:.2f} (Return: {buy_hold_return:.2f}%)")
+    print(f"Trading strategy: ${strategy_final:.2f} (Return: {strategy_return:.2f}%)")
+    
+    outperformance = strategy_return - buy_hold_return
+    if outperformance > 0:
+        print(f"Strategy OUTPERFORMED Buy & Hold by {outperformance:.2f}%")
+    else:
+        print(f"Strategy UNDERPERFORMED Buy & Hold by {abs(outperformance):.2f}%")
+    print("="*50)
 
 def main(params=None, test_mode=False):
-    """Main program loop with test mode support"""
+    """Main program loop with parameter optimization and caching"""
     tolerance = getTolerance()
     method = method1
-    parameters = params or {
-        'shortWindow': 10, 
-        'longWindow': 20, 
-        'RSIWindow': 14, 
-        'bollingerBands': 20, 
-        'ATR': 14, 
-        'stochasticOscillator': 14
-    }
     
     symbol = getSymbol()
     start = get_analysis_period()
     
     start_date, end_date = getDates(start, 0)
-    data = getData(symbol, start_date, end_date)
     
-    testData = generateSignals(data, method, parameters)
+    # If parameters aren't provided, try to load saved ones or optimize
+    if params is None:
+        params = load_optimized_parameters(symbol)
+        
+        if params is None:
+            print(f"No saved parameters found for {symbol}. Optimizing...")
+            params, _ = optimize_parameters(symbol, start_date, end_date, money=1000, test_mode=test_mode)
+            save_optimized_parameters(symbol, params)
+        else:
+            print(f"Using saved parameters for {symbol}: {params}")
+            
+            # Ask if user wants to re-optimize
+            reoptimize = input("Would you like to re-optimize parameters? (y/n): ").strip().lower()
+            if reoptimize == 'y':
+                params, _ = optimize_parameters(symbol, start_date, end_date, money=1000, test_mode=test_mode)
+                save_optimized_parameters(symbol, params)
+    else:
+        print("\nUsing provided parameters:", params)
+    
+    # Get data and run strategy with optimized parameters
+    data = getData(symbol, start_date, end_date)
+    testData = generateSignals(data, method, params)
     money = 1000
     
     historicalTotalReturns = getPercentages(data, money)
@@ -397,21 +563,12 @@ def main(params=None, test_mode=False):
     if test_mode:
         return float(strategyTotalReturns['%TotDiff'].iloc[-1])
         
-    predict = predictions(data, method, money, tolerance, parameters)
+    predict = predictions(data, method, money, tolerance, params)
     outputToFiles(data, predict, symbol, end_date)
     
     display_results(historicalTotalReturns, strategyTotalReturns, symbol, start_date, end_date)
     
     return handle_user_choice(symbol)
-
-def run_pipeline_with_params(monkeypatch, capsys, params, symbol="AAPL", years="1"):
-    """Helper function to run pipeline with params."""
-    inputs = iter([symbol, years, "1"])
-    monkeypatch.setattr('builtins.input', lambda _: next(inputs))
-    
-    result = Main.main(params, test_mode=True)
-    assert isinstance(result, float), "Expected numeric return value"
-    return result
 
 if __name__ == "__main__":
     print("""
