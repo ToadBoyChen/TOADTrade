@@ -344,73 +344,74 @@ def getTolerance():
 
     return tolerance
 
-def main():
-    tolerance = getTolerance()
-    method = method1 # Method by which we develop signals
-    parameters = {'shortWindow': 10, 'longWindow': 20, 'RSIWindow': 14, 'bollingerBands' : 20, 'ATR' : 14, 'stochasticOscillator' : 14}
-    symbol = getSymbol()
-    
-    start = 5
+def get_analysis_period():
+    """Get analysis period with validation"""
     while True:
         try:
             start = int(input("When would you like to test from (1 - 1 year ago, 2 - 2 years ago, ...)? "))
-        except:
-            print("Input not an integer, choose again")
-        if start < 1:
+            if start >= 1:
+                return start
             print("Cannot accept negatives")
-        else:
-            break
+        except ValueError:
+            print("Input not an integer, choose again")
+
+def handle_user_choice(symbol):
+    """Handle menu choices without recursion"""
+    while True:
+        choice = input("Exit (1), work with data (2) or try again (3): ").strip()
+        if choice == "1":
+            return None
+        elif choice == "2":
+            workWithData(symbol)
+            continue
+        elif choice == "3":
+            return "restart"
+        print("Invalid input. Please enter 1, 2, or 3.")
+
+def main(params=None, test_mode=False):
+    """Main program loop with test mode support"""
+    tolerance = getTolerance()
+    method = method1
+    parameters = params or {
+        'shortWindow': 10, 
+        'longWindow': 20, 
+        'RSIWindow': 14, 
+        'bollingerBands': 20, 
+        'ATR': 14, 
+        'stochasticOscillator': 14
+    }
+    
+    symbol = getSymbol()
+    start = get_analysis_period()
     
     start_date, end_date = getDates(start, 0)
-    
     data = getData(symbol, start_date, end_date)
-    print("Generating signals... \n")
-
-    testData = generateSignals(data, method, parameters)
     
+    testData = generateSignals(data, method, parameters)
     money = 1000
     
     historicalTotalReturns = getPercentages(data, money)
-    print(f"Back testing data using {method}... \n")
     strategyTotalReturns = backTest(testData, money, tolerance)
+    
+    # For test mode, return early with just the returns
+    if test_mode:
+        return float(strategyTotalReturns['%TotDiff'].iloc[-1])
+        
     predict = predictions(data, method, money, tolerance, parameters)
+    outputToFiles(data, predict, symbol, end_date)
+    
+    display_results(historicalTotalReturns, strategyTotalReturns, symbol, start_date, end_date)
+    
+    return handle_user_choice(symbol)
 
-    outputToFiles(data, predict, symbol, end_date)    
+def run_pipeline_with_params(monkeypatch, capsys, params, symbol="AAPL", years="1"):
+    """Helper function to run pipeline with params."""
+    inputs = iter([symbol, years, "1"])
+    monkeypatch.setattr('builtins.input', lambda _: next(inputs))
     
-    print("")
-    print("")
-    while True:
-        choice0 = input("See Historical and back test data (y/n)? \n")
-        if choice0 == "y":
-            print("Historical Returns")        
-            print(historicalTotalReturns, "\n \n")
-            print("Strategic Returns")
-            print(strategyTotalReturns, "\n \n")
-            break
-        elif choice0 == "n":
-            break
-        else:
-            print("Invalid input. Please enter 'y' or 'n'.")
-            
-    print(f"Predictions saved to trade_predictions_{symbol}_{end_date}.")
-    print(f"Analysis used saved to analysis_used_{symbol}_{end_date}.")
-    print(f"Data used saved to data_used_{symbol}_{end_date}. \n \n")
-    print(f"Historically, returns from {start_date} to {end_date} is {historicalTotalReturns['%TotDiff'].iloc[-1]}")
-    print(f"Using the strategy, returns from {start_date} to {end_date} is {strategyTotalReturns['%TotDiff'].iloc[-1]} \n \n")
-    
-    x = True
-    while x:
-        choice = input("Exit (1), work with data (2) or try again (3): ")
-        if choice == "1":
-            x = False
-            break
-        elif choice == "2":
-            workWithData(symbol)
-        elif choice == "3":
-            main()
-            x = False
-        else:
-            continue
+    result = Main.main(params, test_mode=True)
+    assert isinstance(result, float), "Expected numeric return value"
+    return result
 
 if __name__ == "__main__":
     print("""
