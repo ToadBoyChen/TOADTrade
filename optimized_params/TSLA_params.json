@@ -1,0 +1,8 @@
+{
+    "shortWindow": 15,
+    "longWindow": 20,
+    "RSIWindow": 7,
+    "bollingerBands": 15,
+    "ATR": 21,
+    "stochasticOscillator": 14
+}
